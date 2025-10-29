@@ -37,7 +37,7 @@ type DeviceInfo struct {
 	Mode             uint8
 	DeviceHash       string
 	ServiceData      string
-	CapabilityBitmap []uint32
+	CapabilityBitmap []uint16
 	NetChannelInfo   NetChannelInfo
 }
 
@@ -145,10 +145,10 @@ func ParseServiceDiscover(buf []byte, out *DeviceInfo) (string, error) {
 	}
 
 	if arr, ok := data[jsonCapabilityBitmap].([]any); ok {
-		caps := make([]uint32, 0, len(arr))
+		caps := make([]uint16, 0, len(arr))
 		for _, it := range arr {
 			if f, ok := it.(float64); ok && f >= 0 {
-				caps = append(caps, uint32(f))
+				caps = append(caps, uint16(f))
 			}
 		}
 		out.CapabilityBitmap = caps

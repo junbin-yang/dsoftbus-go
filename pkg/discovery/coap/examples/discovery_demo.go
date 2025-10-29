@@ -132,10 +132,10 @@ func parseCaps(s string) []uint {
 
 func registerProviders(localIp, devName, devID, version string, devType uint, mode uint, devHash, serviceData string, caps []uint) {
 	deviceInfoProvider := func() *coap.DeviceInfo {
-		// 将[]uint转[]uint32
-		c := make([]uint32, len(caps))
+		// 将[]uint转[]uint16
+		c := make([]uint16, len(caps))
 		for i, v := range caps {
-			c[i] = uint32(v)
+			c[i] = uint16(v)
 		}
 		return &coap.DeviceInfo{
 			DeviceId:         devID,

@@ -61,5 +61,5 @@ type LocalDeviceInfo struct {
 	DeviceType       DeviceType
 	Version          string
 	ServiceData      string
-	CapabilityBitmap []uint32
+	CapabilityBitmap []uint16
 }

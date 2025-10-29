@@ -1,6 +1,11 @@
 package service
 
 import (
+	"errors"
+	"fmt"
+	"net"
+	"sync"
+
 	"github.com/junbin-yang/dsoftbus-go/pkg/discovery/coap"
 	log "github.com/junbin-yang/dsoftbus-go/pkg/utils/logger"
 	"github.com/junbin-yang/dsoftbus-go/pkg/utils/network"
@@ -22,10 +27,10 @@ var (
 		Name:             DEVICE_DEFAULT_NAME,         // 设备名称
 		DeviceId:         DEVICE_DEFAULT_ID,           // 设备ID
 		NetworkName:      DEVICE_DEFAULT_IFC,          // 设备网络接口名
-		Type:             DEVICE_DEFAULT_TYPE,         // 设备类型
+		DeviceType:       DEVICE_DEFAULT_TYPE,         // 设备类型
 		Version:          DEVICE_DEFAULT_VERSION,      // 设备版本
 		ServiceData:      DEVICE_DEFAULT_SERVICE_DATA, // 设备服务数据
-		CapabilityBitmap: []uint32{1},                 // 设备能力位图
+		CapabilityBitmap: []uint16{1},                 // 设备能力位图
 	}
 	g_deviceInfo_lock sync.RWMutex
 	g_net_mgr         *network.Manager
@@ -39,7 +44,8 @@ func DiscCoapInit() error {
 	}
 	err = g_net_mgr.Start()
 	if err != nil {
-		return errors.New("启动网络监控失败: %v", err)
+		log.Fatalf("启动网络监控失败: %v", err)
+		return err
 	}
 
 	registerProviders()
@@ -48,6 +54,7 @@ func DiscCoapInit() error {
 		return errors.New("初始化发现监听服务失败")
 	}
 	log.Infof("CoAP discovery listener started on UDP port %d", coap.COAP_DEFAULT_PORT)
+	return nil
 }
 
 func DiscCoapDeinit() {
@@ -61,7 +68,13 @@ func DiscCoapRegisterDeviceInfo(dev LocalDeviceInfo) {
 	g_deviceInfo = dev
 }
 
-func DiscCoapRegistService(serviceData string, capabilityBitmap []uint32) {
+func DiscCoapGetDeviceInfo() *LocalDeviceInfo {
+	g_deviceInfo_lock.Lock()
+	defer g_deviceInfo_lock.Unlock()
+	return &g_deviceInfo
+}
+
+func DiscCoapRegistService(serviceData string, capabilityBitmap []uint16) {
 	g_deviceInfo_lock.RLock()
 	defer g_deviceInfo_lock.RUnlock()
 	g_deviceInfo.ServiceData = serviceData
@@ -75,7 +88,7 @@ func registerProviders() {
 		return &coap.DeviceInfo{
 			DeviceId:         g_deviceInfo.DeviceId,
 			DeviceName:       g_deviceInfo.Name,
-			DeviceType:       g_deviceInfo.Type,
+			DeviceType:       uint8(g_deviceInfo.DeviceType),
 			Version:          g_deviceInfo.Version,
 			Mode:             DEVICE_DEFAULT_DISCOVER_MODE,
 			DeviceHash:       DEVICE_DEFAULT_HASH,
@@ -88,10 +101,11 @@ func registerProviders() {
 		if err != nil {
 			return "", err
 		}
-		return localIp, nil
+		return localIp.String(), nil
 	}
 	discoverHandler := func(dev *coap.DeviceInfo) {
 		fmt.Printf("发现新设备：%+v\n", dev)
+		// todo
 	}
 
 	coap.RegisterProviders(coap.Providers{
@@ -103,7 +117,7 @@ func registerProviders() {
 
 func getLocalNetworkInfo() (net.IP, net.IPMask, error) {
 	if g_net_mgr == nil {
-		return "", errors.New("网络管理器未初始化")
+		return net.IP{}, net.IPMask{}, errors.New("网络管理器未初始化")
 	}
 	defaultInterface, _ := g_net_mgr.GetDefaultInterface()
 	localIp := defaultInterface.Addresses[0]
