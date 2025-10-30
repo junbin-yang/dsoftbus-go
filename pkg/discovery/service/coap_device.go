@@ -24,6 +24,7 @@ type DeviceMap struct {
 
 // g_devMap 设备类型映射表
 var g_devMap = []DeviceMap{
+	{Value: "Unknown", DevType: DeviceTypeUnknown},
 	{Value: "PHONE", DevType: DeviceTypePhone},
 	{Value: "PAD", DevType: DeviceTypePad},
 	{Value: "TV", DevType: DeviceTypeTV},
@@ -35,23 +36,23 @@ var g_devMap = []DeviceMap{
 }
 
 // 根据设备名称获取枚举值
-func GetDeviceTypeByName(name string) (DeviceType, bool) {
+func GetDeviceTypeByName(name string) DeviceType {
 	for _, m := range g_devMap {
 		if m.Value == name {
-			return m.DevType, true
+			return m.DevType
 		}
 	}
-	return DeviceTypeUnknown, false
+	return DeviceTypeUnknown
 }
 
 // 根据枚举值获取设备名称
-func GetDeviceNameByType(devType DeviceType) (string, bool) {
+func GetDeviceNameByType(devType DeviceType) string {
 	for _, m := range g_devMap {
 		if m.DevType == devType {
-			return m.Value, true
+			return m.Value
 		}
 	}
-	return "", false
+	return "Unknown"
 }
 
 type LocalDeviceInfo struct {

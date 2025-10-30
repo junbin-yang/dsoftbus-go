@@ -36,15 +36,13 @@ func NewProductionRotateBySize(filename string) io.Writer {
 
 func NewProductionRotateConfig(filename string) *RotateConfig {
 	return &RotateConfig{
-		Filename: filename,
-		MaxAge:   30, // 日志保留 30 天
-
+		Filename:     filename,
+		MaxAge:       30,             // 日志保留 30 天
 		RotationTime: time.Hour * 24, // 24 小时轮转一次
-
-		MaxSize:    100, // 100M
-		MaxBackups: 100,
-		Compress:   true,
-		LocalTime:  false,
+		MaxSize:      100,            // 100M
+		MaxBackups:   100,
+		Compress:     true,
+		LocalTime:    false,
 	}
 }
 
@@ -75,4 +73,3 @@ func NewRotateBySize(cfg *RotateConfig) io.Writer {
 		Compress:   cfg.Compress,
 	}
 }
-

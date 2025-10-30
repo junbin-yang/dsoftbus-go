@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"github.com/junbin-yang/dsoftbus-go/pkg/utils/config"
 	"sync"
 )
 
@@ -231,9 +232,20 @@ func InitService() error {
 		return err
 	}
 
-	// todo 设置正确的设备信息！！！！！！
-	DiscCoapRegisterDeviceInfo(LocalDeviceInfo{DeviceId: "12345678901234567890",
-		Name: "testDevice", ServiceData: "ddmpCapability"})
+	// 设备设备信息
+	conf := config.Parse()
+	if conf.DeviceName == "" || conf.UUID == "" || conf.Interface == "" || conf.DeviceType == "" {
+		return errors.New("配置文件错误")
+	}
+	DiscCoapRegisterDeviceInfo(LocalDeviceInfo{
+		Name:             conf.DeviceName,
+		DeviceId:         conf.UUID,
+		NetworkName:      conf.Interface,
+		DeviceType:       GetDeviceTypeByName(conf.DeviceType),
+		Version:          DEVICE_DEFAULT_VERSION,
+		ServiceData:      DEVICE_DEFAULT_SERVICE_DATA,
+		CapabilityBitmap: []uint16{},
+	})
 
 	g_isServiceInit = 1
 	return nil
