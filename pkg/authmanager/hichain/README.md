@@ -2,6 +2,33 @@
 
 HiChain 模块是一个用于设备间认证与会话管理的协议实现，提供了完整的认证流程处理、会话密钥派生及消息交互能力，支持配件设备（HCAccessory）与控制器设备（HCController）之间的安全认证。
 
+## 架构说明
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Application Layer                         │
+│                  (auth_manager.go)                           │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                 Auth Interface Layer                         │
+│              (auth_interface.go)                             │
+│  - Manages HiChain instances                                │
+│  - Handles callbacks                                        │
+│  - Manages session keys                                     │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   HiChain Protocol                           │
+│                  (hichain/*.go)                              │
+│  - Authentication protocol                                  │
+│  - Key derivation                                           │
+│  - Message handling                                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
 ## 功能说明
 
 该模块主要实现以下功能:
@@ -187,3 +214,141 @@ Destroy(&handle) // 销毁后 handle 会被置空
 5、确认结果：
 
 - 双方通过 SetServiceResult 回调通知上层认证结果（成功 / 失败）
+
+## 上层模块集成实现
+
+**auth_interface.go**
+
+管理HiChain集成：
+- 实现HiChain回调
+- 管理HiChain实例生命周期
+- 处理会话密钥存储
+
+### 服务端
+
+服务器自动处理HiChain认证：
+
+```go
+// 当收到MODULE_AUTH_SDK消息时，自动调用HiChain
+// auth_manager.go中的OnDataReceived会处理
+
+// 1. 创建或获取auth session
+session := m.GetAuthSessionBySeqID(pkt.Seq)
+if session == nil {
+    session = m.CreateAuthSession(conn, pkt.Seq)
+}
+
+// 2. 处理HiChain数据
+err := m.authInterface.ProcessReceivedData(session.SessionID, data)
+```
+
+### 客户端
+
+客户端需要主动发起HiChain认证：
+
+```go
+// 1. 建立连接
+client := NewAuthClient(devInfo)
+client.Connect(remoteIP, remotePort)
+
+// 2. 发送GetAuthInfo
+client.SendGetAuthInfo()
+client.ReceiveResponse()
+
+// 3. 发送VerifyIP
+client.SendVerifyIP(authPort, sessionPort)
+client.ReceiveResponse()
+
+// 4. HiChain认证会在后台自动进行
+// 当使用加密通道时，会自动使用派生的会话密钥
+```
+
+### 回调函数
+
+#### OnTransmit
+向对端发送 HiChain 数据：
+```go
+func (ai *AuthInterface) OnTransmit(identity *hichain.SessionIdentity, data []byte) error {
+    // 通过MODULE_AUTH_SDK发送数据
+    return AuthConnPostBytes(conn, ModuleAuthSDK, 0, seqID, data, nil)
+}
+```
+
+#### GetProtocolParams
+获取协议参数：
+```go
+func (ai *AuthInterface) GetProtocolParams(identity *hichain.SessionIdentity, operationCode int32) (*hichain.ProtocolParams, error) {
+    return &hichain.ProtocolParams{
+        KeyLength:  16,
+        SelfAuthID: localDeviceID,
+        PeerAuthID: peerDeviceID,
+    }, nil
+}
+```
+
+#### SetSessionKey
+存储派生的会话密钥：
+```go
+func (ai *AuthInterface) SetSessionKey(identity *hichain.SessionIdentity, sessionKey *hichain.SessionKey) error {
+    // 存储到session key manager
+    return ai.authMgr.sessionKeyMgr.AddSessionKey(fd, index, sessionKey.Key)
+}
+```
+
+#### SetServiceResult
+处理认证结果：
+```go
+func (ai *AuthInterface) SetServiceResult(identity *hichain.SessionIdentity, result int32) error {
+    if result == hichain.HCOk {
+        // 认证成功
+    } else {
+        // 认证失败，清理会话密钥
+    }
+    return nil
+}
+```
+
+#### 模块路由
+
+```go
+// 在 auth_manager.go 的 OnDataReceived() 方法中
+if pkt.Module > ModuleHiChain && pkt.Module <= ModuleAuthSDK {
+    // 路由到HiChain处理
+    err := m.authInterface.ProcessReceivedData(session.SessionID, data)
+} else {
+    // 路由到其他处理器
+    m.OnModuleMessageReceived(conn, netConn, pkt, msgData)
+}
+```
+
+### 会话密钥使用
+
+HiChain派生的会话密钥会自动用于加密通道：
+
+```go
+// 加密时
+skey := sessionKeyMgr.GetNewSessionKey()  // 获取HiChain派生的密钥
+encrypted := EncryptTransData(skey.Key, iv, plaintext)
+
+// 解密时
+index := extractIndex(encryptedData)
+skey := sessionKeyMgr.GetSessionKeyByIndex(index)  // 使用HiChain密钥
+plaintext := DecryptTransData(skey.Key, encryptedData)
+```
+
+## 安全特性
+
+### 1. 挑战 - 响应认证
+- 防止重放攻击
+- 双向认证
+- 随机挑战值
+
+### 2. 会话密钥派生
+- 基于SHA256的密钥派生
+- 包含双方认证信息
+- 16字节AES密钥
+
+### 3. 安全通信
+- AES-128-GCM加密
+- 认证加密（AEAD）
+- 防篡改保护
