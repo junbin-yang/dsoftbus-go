@@ -6,6 +6,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/junbin-yang/dsoftbus-go/pkg/discovery/coap"
 	log "github.com/junbin-yang/dsoftbus-go/pkg/utils/logger"
 )
 
@@ -111,16 +112,23 @@ func (m *AuthManager) GetOnlineAuthConnByIP(ip string) *AuthConn {
 // RemoveAuthConn 移除认证连接
 // 参数：
 //   - fd：文件描述符
+//
+// 注意：此方法不会清除会话密钥。
+// 在HarmonyOS设计中，会话密钥是设备级别的，用于后续的Session建立。
+// 即使认证连接关闭，密钥仍需保留供Session使用。
 func (m *AuthManager) RemoveAuthConn(fd int) {
 	m.connMapMu.Lock()
 	defer m.connMapMu.Unlock()
 
 	if conn, ok := m.connMap[fd]; ok {
-		// 清除关联的会话密钥
-		m.sessionKeyMgr.ClearSessionKeyByFd(fd)
+		// 重要：不清除会话密钥！
+		// 会话密钥在HiChain认证时协商，用于后续Session建立
+		// 即使认证连接关闭，密钥也需要保留
+		// m.sessionKeyMgr.ClearSessionKeyByFd(fd) // 注释掉
+
 		// 从映射中删除连接
 		delete(m.connMap, fd)
-		log.Infof("[AUTH] 已移除连接 fd=%d, ip=%s", conn.Fd, conn.DeviceIP)
+		log.Infof("[AUTH] 已移除连接 fd=%d, ip=%s (密钥保留供Session使用)", conn.Fd, conn.DeviceIP)
 	}
 }
 
@@ -305,6 +313,9 @@ func (m *AuthManager) OnVerifyIP(conn *AuthConn, netConn net.Conn, seq int64, re
 func (m *AuthManager) OnVerifyDeviceID(conn *AuthConn, netConn net.Conn, seq int64, request *VerifyDeviceIDMsg) {
 	log.Infof("[AUTH] 收到来自%s的设备ID验证请求，DeviceID=%s", conn.DeviceIP, request.DeviceID)
 
+	// 更新连接的设备ID信息
+	conn.DeviceID = request.DeviceID
+
 	// 构建回复消息（返回本地设备ID）
 	reply := &VerifyDeviceIDMsg{
 		Code:     CodeVerifyDevID,
@@ -315,7 +326,14 @@ func (m *AuthManager) OnVerifyDeviceID(conn *AuthConn, netConn net.Conn, seq int
 	err := AuthConnPostMessage(netConn, ModuleConnection, FlagReply, seq, reply, nil)
 	if err != nil {
 		log.Errorf("[AUTH] 设备ID验证回复发送失败: %v", err)
+		return
 	}
+
+	// 注意：会话密钥已经通过HiChain的AUTH_SDK模块协商完成
+	// HiChain会通过SetSessionKey回调自动保存密钥到SessionKeyManager
+	// 不需要在这里手动生成密钥
+
+	log.Info("[AUTH] 设备ID验证完成")
 }
 
 // OnMsgOpenChannelReq 处理打开通道请求
@@ -355,6 +373,9 @@ func (m *AuthManager) OnMsgOpenChannelReq(conn *AuthConn, netConn net.Conn, seq 
 //   - pkt：数据包头部
 //   - msgData：消息数据（已解密）
 func (m *AuthManager) OnModuleMessageReceived(conn *AuthConn, netConn net.Conn, pkt *Packet, msgData []byte) {
+	// 清理C字符串终止符（真实鸿蒙设备可能在JSON末尾添加\x00）
+	msgData = coap.CleanJSONData(msgData)
+
 	switch pkt.Module {
 	case ModuleTrustEngine:
 		// 非回复消息才处理（避免重复处理自己发出的消息）
@@ -364,6 +385,11 @@ func (m *AuthManager) OnModuleMessageReceived(conn *AuthConn, netConn net.Conn, 
 				log.Errorf("[AUTH] 解析GetDeviceIDMsg失败: %v", err)
 				return
 			}
+
+			// 提取真实的设备ID（处理{"UDID":"xxx"}格式）
+			msg.DeviceID = coap.ExtractDeviceID(msg.DeviceID)
+			msg.Data = coap.ExtractDeviceID(msg.Data)
+
 			m.OnMsgOpenChannelReq(conn, netConn, pkt.Seq, &msg)
 		}
 
@@ -507,4 +533,61 @@ func (m *AuthManager) ProcessPackets(conn *AuthConn, netConn net.Conn, buf []byt
 	}
 
 	return processed
+}
+
+// GetSessionKeyByIndex 通过索引获取会话密钥（实现session.AuthManagerInterface接口）
+// 参数：
+//   - index：密钥索引
+// 返回：
+//   - 会话密钥字节数组
+//   - 错误（若未找到则返回错误）
+func (m *AuthManager) GetSessionKeyByIndex(index int) ([]byte, error) {
+	skey := m.sessionKeyMgr.GetSessionKeyByIndex(index)
+	if skey == nil {
+		log.Errorf("[AUTH] 未找到索引为%d的会话密钥", index)
+		return nil, ErrSessionKeyNotFound
+	}
+	log.Infof("[AUTH] 找到会话密钥: deviceID=%s, index=%d, keyHash=%x", skey.DeviceID, skey.Index, skey.Key[:4])
+	return skey.Key[:], nil
+}
+
+// GetSessionKeyByDeviceIDAndIndex 通过设备ID和索引获取会话密钥
+// 参数：
+//   - deviceID：设备ID
+//   - index：密钥索引
+// 返回：
+//   - 会话密钥字节数组
+//   - 错误（若未找到则返回错误）
+func (m *AuthManager) GetSessionKeyByDeviceIDAndIndex(deviceID string, index int) ([]byte, error) {
+	skey := m.sessionKeyMgr.GetSessionKeyByDeviceIDAndIndex(deviceID, index)
+	if skey == nil {
+		log.Errorf("[AUTH] 未找到deviceID=%s, index=%d的会话密钥", deviceID, index)
+		return nil, ErrSessionKeyNotFound
+	}
+	log.Infof("[AUTH] 找到会话密钥: deviceID=%s, index=%d, keyHash=%x", skey.DeviceID, skey.Index, skey.Key[:4])
+	return skey.Key[:], nil
+}
+
+// GetLocalDeviceID 获取本地设备ID（实现session.AuthManagerInterface接口）
+// 返回：
+//   - 本地设备ID字符串
+func (m *AuthManager) GetLocalDeviceID() string {
+	if m.localDevInfo != nil {
+		return m.localDevInfo.DeviceID
+	}
+	return "UNKNOWN"
+}
+
+// GetAuthPort 获取认证端口
+// 返回：
+//   - 认证端口号
+func (m *AuthManager) GetAuthPort() int {
+	return m.authPort
+}
+
+// GetSessionKeyManager 获取会话密钥管理器（用于外部注入密钥）
+// 返回：
+//   - SessionKeyManager实例
+func (m *AuthManager) GetSessionKeyManager() *SessionKeyManager {
+	return m.sessionKeyMgr
 }

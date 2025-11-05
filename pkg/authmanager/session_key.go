@@ -20,12 +20,12 @@ func NewSessionKeyManager() *SessionKeyManager {
 
 // AddSessionKey 添加或替换会话密钥
 // 参数：
-//   - fd：关联的文件描述符（标识连接）
+//   - deviceID：关联的设备ID（全局唯一标识）
 //   - index：密钥索引（唯一标识）
 //   - key：密钥字节数组（长度需为AuthSessionKeyLen）
 // 返回：
 //   - 错误（若密钥长度无效则返回ErrInvalidKeyLength）
-func (m *SessionKeyManager) AddSessionKey(fd int, index int, key []byte) error {
+func (m *SessionKeyManager) AddSessionKey(deviceID string, index int, key []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -36,8 +36,8 @@ func (m *SessionKeyManager) AddSessionKey(fd int, index int, key []byte) error {
 
 	// 创建会话密钥对象并复制密钥内容
 	skey := &SessionKey{
-		Index: index,
-		Fd:    fd,
+		Index:    index,
+		DeviceID: deviceID,
 	}
 	copy(skey.Key[:], key)
 
@@ -55,6 +55,7 @@ func (m *SessionKeyManager) AddSessionKey(fd int, index int, key []byte) error {
 }
 
 // GetSessionKeyByIndex 通过索引查找会话密钥
+// 注意：如果有多个相同索引的密钥，返回最新添加的那个（链表尾部）
 // 参数：
 //   - index：密钥索引
 // 返回：
@@ -63,9 +64,29 @@ func (m *SessionKeyManager) GetSessionKeyByIndex(index int) *SessionKey {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	for e := m.keyList.Front(); e != nil; e = e.Next() {
+	// 从链表尾部向前查找（尾部是最新的）
+	for e := m.keyList.Back(); e != nil; e = e.Prev() {
 		skey := e.Value.(*SessionKey)
 		if skey.Index == index {
+			return skey
+		}
+	}
+	return nil
+}
+
+// GetSessionKeyByDeviceIDAndIndex 通过设备ID和索引查找会话密钥
+// 参数：
+//   - deviceID：设备ID
+//   - index：密钥索引
+// 返回：
+//   - 找到的SessionKey（若不存在则返回nil）
+func (m *SessionKeyManager) GetSessionKeyByDeviceIDAndIndex(deviceID string, index int) *SessionKey {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for e := m.keyList.Front(); e != nil; e = e.Next() {
+		skey := e.Value.(*SessionKey)
+		if skey.DeviceID == deviceID && skey.Index == index {
 			return skey
 		}
 	}
@@ -87,10 +108,10 @@ func (m *SessionKeyManager) GetNewSessionKey() *SessionKey {
 	return back.Value.(*SessionKey)
 }
 
-// ClearSessionKeyByFd 移除指定文件描述符关联的所有会话密钥
+// ClearSessionKeyByDeviceID 移除指定设备ID关联的所有会话密钥
 // 参数：
-//   - fd：文件描述符（标识连接）
-func (m *SessionKeyManager) ClearSessionKeyByFd(fd int) {
+//   - deviceID：设备ID（全局唯一标识）
+func (m *SessionKeyManager) ClearSessionKeyByDeviceID(deviceID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -98,7 +119,7 @@ func (m *SessionKeyManager) ClearSessionKeyByFd(fd int) {
 	var toRemove []*list.Element
 	for e := m.keyList.Front(); e != nil; e = e.Next() {
 		skey := e.Value.(*SessionKey)
-		if skey.Fd == fd {
+		if skey.DeviceID == deviceID {
 			toRemove = append(toRemove, e)
 		}
 	}

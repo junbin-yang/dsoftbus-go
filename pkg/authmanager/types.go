@@ -45,9 +45,9 @@ type ConnInfo struct {
 
 // SessionKey 表示认证会话密钥
 type SessionKey struct {
-	Key   [AuthSessionKeyLen]byte // 密钥内容（固定长度数组）
-	Index int                     // 密钥索引
-	Fd    int                     // 关联的文件描述符
+	Key      [AuthSessionKeyLen]byte // 密钥内容（固定长度数组）
+	Index    int                     // 密钥索引
+	DeviceID string                  // 关联的设备ID（全局唯一标识）
 }
 
 // AuthSession 表示一个认证会话

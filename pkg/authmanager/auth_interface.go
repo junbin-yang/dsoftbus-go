@@ -94,14 +94,17 @@ func (ai *AuthInterface) SetSessionKey(identity *hichain.SessionIdentity, sessio
 	}
 
 	// 将会话密钥添加到密钥管理器
-	index := int(session.SeqID) // 使用序列号作为密钥索引
-	err := ai.authMgr.sessionKeyMgr.AddSessionKey(session.Conn.Fd, index, sessionKey.Key)
+	// 重要：使用设备ID作为标识，索引为0
+	// 在HarmonyOS中，认证阶段协商的密钥用于后续的Session建立
+	index := 0
+	deviceID := session.Conn.DeviceID
+	err := ai.authMgr.sessionKeyMgr.AddSessionKey(deviceID, index, sessionKey.Key)
 	if err != nil {
 		log.Errorf("[AUTH_INTERFACE] 添加会话密钥失败: %v", err)
 		return err
 	}
 
-	log.Infof("[AUTH_INTERFACE] 会话密钥添加成功, 索引=%d", index)
+	log.Infof("[AUTH_INTERFACE] 会话密钥添加成功, deviceID=%s, index=%d", deviceID, index)
 	return nil
 }
 

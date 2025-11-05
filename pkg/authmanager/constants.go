@@ -3,8 +3,6 @@ package authmanager
 // 数据包相关常量
 const (
 	MessageIndexLen           = 4                                                       // 消息索引长度（字节）
-	MessageGcmNonceLen        = 12                                                      // GCM模式下的随机数（nonce）长度（字节）
-	MessageGcmMacLen          = 16                                                      // GCM模式下的消息认证码（MAC）长度（字节）
 	MessageEncryptOverheadLen = MessageIndexLen + MessageGcmNonceLen + MessageGcmMacLen // 加密额外开销（索引+nonce+MAC）
 
 	DefaultBufSize      = 1536                            // 默认缓冲区大小（字节）

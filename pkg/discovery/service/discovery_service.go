@@ -2,8 +2,9 @@ package service
 
 import (
 	"errors"
-	"github.com/junbin-yang/dsoftbus-go/pkg/utils/config"
 	"sync"
+
+	"github.com/junbin-yang/dsoftbus-go/pkg/utils/config"
 )
 
 // ExchangeMedium 用于发布服务的介质（如蓝牙、Wi-Fi、USB等）
@@ -166,9 +167,11 @@ func PublishService(moduleName string, info *PublishInfo) (int, error) {
 	freeModule.capabilityData = capData
 	freeModule.dataLength = uint16(len(info.CapabilityData))
 
-	// 注册CoAP服务
-	capabilityBitmaps := []uint16{bitmap}
-	DiscCoapRegistService(string(capData), capabilityBitmaps)
+	// 重新收集所有模块的能力和数据，并注册到CoAP
+	if err := updateCoapService(); err != nil {
+		return 0, err
+	}
+
 	return info.PublishId, nil
 }
 

@@ -83,11 +83,13 @@ type HCCallBack struct {
 }
 
 type HiChainHandle struct {
-	identity   *SessionIdentity // 会话标识信息
-	deviceType int              // 设备类型（对应HCAccessory/HCController）
-	callback   *HCCallBack      // 回调函数集合
-	state      int              // 认证状态（对应StateXXX常量）
-	sessionKey []byte           // 会话密钥字节数组
-	peerAuthID string           // 对端认证ID
-	selfAuthID string           // 自身认证ID
+	identity      *SessionIdentity // 会话标识信息
+	deviceType    int              // 设备类型（对应HCAccessory/HCController）
+	callback      *HCCallBack      // 回调函数集合
+	state         int              // 认证状态（对应StateXXX常量）
+	sessionKey    []byte           // 会话密钥字节数组
+	peerAuthID    string           // 对端认证ID
+	selfAuthID    string           // 自身认证ID
+	ourChallenge  []byte           // 本地发出的挑战值（用于密钥派生）
+	peerChallenge []byte           // 对端发来的挑战值（用于密钥派生）
 }

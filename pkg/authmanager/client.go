@@ -6,6 +6,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/junbin-yang/dsoftbus-go/pkg/discovery/coap"
 	log "github.com/junbin-yang/dsoftbus-go/pkg/utils/logger"
 )
 
@@ -171,6 +172,9 @@ func (c *AuthClient) ReceiveResponse() error {
 	// 提取数据部分
 	data := buf[PacketHeadSize : PacketHeadSize+pkt.DataLen]
 
+	// 清理C字符串终止符（真实鸿蒙设备可能在JSON末尾添加\x00）
+	data = coap.CleanJSONData(data)
+
 	log.Infof("[AUTH] 收到响应: 模块=%d, 序列号=%d, 标志位=%d, 数据长度=%d\n", pkt.Module, pkt.Seq, pkt.Flags, pkt.DataLen)
 
 	// 根据模块类型解析响应
@@ -181,9 +185,16 @@ func (c *AuthClient) ReceiveResponse() error {
 			return fmt.Errorf("解析GetDeviceIDMsg失败: %v", err)
 		}
 		log.Infof("[AUTH] 收到GetDeviceIDMsg: 命令=%s, 数据=%s, 设备ID=%s", msg.Cmd, msg.Data, msg.DeviceID)
+
+		// 提取真实的设备ID（处理{"UDID":"xxx"}格式）
+		extractedDeviceID := coap.ExtractDeviceID(msg.DeviceID)
+		extractedData := coap.ExtractDeviceID(msg.Data)
+
 		// 更新认证连接信息
-		c.authConn.DeviceID = msg.Data
-		c.authConn.AuthID = msg.DeviceID
+		c.authConn.DeviceID = extractedData
+		c.authConn.AuthID = extractedDeviceID
+
+		log.Infof("[AUTH] 提取的设备ID: Data=%s, AuthID=%s", extractedData, extractedDeviceID)
 
 	case ModuleConnection:
 		// 先解析CODE字段确定消息类型
@@ -223,4 +234,125 @@ func (c *AuthClient) ReceiveResponse() error {
 //   - 认证连接信息（AuthConn实例）
 func (c *AuthClient) GetAuthConn() *AuthConn {
 	return c.authConn
+}
+
+// PerformHiChainAuth 执行完整的HiChain认证流程（与真实鸿蒙设备兼容）
+// 返回：
+//   - 协商完成的会话密钥
+//   - 错误信息（认证失败时）
+//
+// 说明：此方法实现了完整的HiChain协议，包括：
+// 1. AUTH_START - 发起认证请求
+// 2. AUTH_CHALLENGE - 接收挑战
+// 3. AUTH_RESPONSE - 发送响应
+// 4. AUTH_CONFIRM - 接收确认
+// 5. 密钥派生和保存
+//
+// 注意：本方法会启动一个goroutine接收AUTH_SDK消息，该goroutine在认证完成后会自动停止
+func (c *AuthClient) PerformHiChainAuth() ([]byte, error) {
+	log.Info("[AUTH_CLIENT] 开始HiChain认证流程")
+
+	// 创建客户端认证接口
+	sessionID := uint32(c.seqNum) // 使用序列号作为会话ID
+	clientInterface := NewClientAuthInterface(c, c.conn, sessionID)
+
+	// 启动HiChain认证
+	if err := clientInterface.StartAuth(); err != nil {
+		return nil, fmt.Errorf("启动HiChain认证失败: %w", err)
+	}
+
+	// 创建停止信号通道
+	stopChan := make(chan struct{})
+
+	// 循环接收并处理AUTH_SDK模块的消息
+	go func() {
+		defer func() {
+			log.Info("[AUTH_CLIENT] AUTH_SDK消息接收goroutine已停止")
+		}()
+
+		for {
+			select {
+			case <-stopChan:
+				// 收到停止信号，退出goroutine
+				return
+			default:
+				// 继续接收消息
+			}
+
+			// 接收数据
+			buf := make([]byte, DefaultBufSize)
+			c.conn.SetReadDeadline(time.Now().Add(30 * time.Second)) // 30秒超时
+			n, err := c.conn.Read(buf)
+			if err != nil {
+				// 检查是否是停止信号导致的错误
+				select {
+				case <-stopChan:
+					return
+				default:
+				}
+
+				log.Errorf("[AUTH_CLIENT] 接收数据失败: %v", err)
+				clientInterface.authComplete <- fmt.Errorf("接收数据失败: %w", err)
+				return
+			}
+
+			// 验证数据包长度
+			if n < PacketHeadSize {
+				log.Errorf("[AUTH_CLIENT] 数据包过短: %d字节", n)
+				continue
+			}
+
+			// 解析数据包头部
+			pkt, err := ParsePacketHead(buf, 0)
+			if err != nil {
+				log.Errorf("[AUTH_CLIENT] 解析数据包失败: %v", err)
+				continue
+			}
+
+			// 只处理AUTH_SDK模块的消息
+			if pkt.Module < ModuleHiChain || pkt.Module > ModuleAuthSDK {
+				log.Debugf("[AUTH_CLIENT] 收到非AUTH_SDK消息，模块=%d（忽略）", pkt.Module)
+				continue
+			}
+
+			// 验证数据包完整性
+			if n < PacketHeadSize+pkt.DataLen {
+				log.Errorf("[AUTH_CLIENT] 数据包不完整")
+				continue
+			}
+
+			// 提取数据部分
+			data := buf[PacketHeadSize : PacketHeadSize+pkt.DataLen]
+			log.Infof("[AUTH_CLIENT] 收到AUTH_SDK消息: 模块=%d, 长度=%d", pkt.Module, pkt.DataLen)
+
+			// 交由HiChain处理
+			if err := clientInterface.ProcessReceivedData(data); err != nil {
+				log.Errorf("[AUTH_CLIENT] HiChain处理失败: %v", err)
+				clientInterface.authComplete <- fmt.Errorf("HiChain处理失败: %w", err)
+				return
+			}
+		}
+	}()
+
+	// 等待认证完成
+	err := clientInterface.WaitForCompletion()
+
+	// 停止接收goroutine
+	close(stopChan)
+
+	// 短暂延迟，确保goroutine退出
+	time.Sleep(100 * time.Millisecond)
+
+	if err != nil {
+		return nil, fmt.Errorf("HiChain认证失败: %w", err)
+	}
+
+	// 获取会话密钥
+	sessionKey := clientInterface.GetSessionKey()
+	if sessionKey == nil || len(sessionKey) == 0 {
+		return nil, fmt.Errorf("未获取到会话密钥")
+	}
+
+	log.Infof("[AUTH_CLIENT] HiChain认证成功，密钥长度=%d字节", len(sessionKey))
+	return sessionKey, nil
 }

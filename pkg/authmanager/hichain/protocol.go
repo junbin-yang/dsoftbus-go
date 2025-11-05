@@ -3,6 +3,7 @@ package hichain
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 )
@@ -45,17 +46,50 @@ func computeResponse(challenge []byte, authID string) []byte {
 }
 
 // deriveSessionKey 从认证数据派生会话密钥
+// 重要：为了确保双方派生相同的密钥，使用字典序对设备ID排序
 func deriveSessionKey(challenge []byte, response []byte, selfAuthID, peerAuthID string) []byte {
 	h := sha256.New()
-	h.Write(challenge)          // 混入挑战值
-	h.Write(response)           // 混入响应值
-	h.Write([]byte(selfAuthID)) // 混入自身认证ID
-	h.Write([]byte(peerAuthID)) // 混入对端认证ID
-	hash := h.Sum(nil)          // 计算SHA256哈希
+	h.Write(challenge) // 混入挑战值
+	h.Write(response)  // 混入响应值
+
+	// 按字典序排序设备ID，确保双方使用相同的顺序
+	// 这样无论是客户端还是服务端，都会得到相同的密钥
+	var id1, id2 string
+	if selfAuthID < peerAuthID {
+		id1 = selfAuthID
+		id2 = peerAuthID
+	} else {
+		id1 = peerAuthID
+		id2 = selfAuthID
+	}
+
+	h.Write([]byte(id1)) // ID1（较小）
+	h.Write([]byte(id2)) // ID2（较大）
+
+	hash := h.Sum(nil) // 计算SHA256哈希
 
 	// 取哈希结果的前16字节作为会话密钥（符合SessionKeyLength定义）
 	sessionKey := make([]byte, SessionKeyLength)
 	copy(sessionKey, hash[:SessionKeyLength])
+
+	// 添加详细调试日志
+	fmt.Printf("[HICHAIN] 密钥派生参数:\n")
+	if len(challenge) >= 8 {
+		fmt.Printf("  challenge: %x\n", challenge[:8])
+	} else {
+		fmt.Printf("  challenge: %x (长度=%d)\n", challenge, len(challenge))
+	}
+	if len(response) >= 8 {
+		fmt.Printf("  response: %x\n", response[:8])
+	} else {
+		fmt.Printf("  response: %x (长度=%d)\n", response, len(response))
+	}
+	fmt.Printf("  selfAuthID: %s\n", selfAuthID)
+	fmt.Printf("  peerAuthID: %s\n", peerAuthID)
+	fmt.Printf("  排序后 id1: %s\n", id1)
+	fmt.Printf("  排序后 id2: %s\n", id2)
+	fmt.Printf("  派生密钥: %x\n", sessionKey)
+
 	return sessionKey
 }
 
@@ -91,6 +125,9 @@ func (h *HiChainHandle) startAuthentication() error {
 		return err
 	}
 
+	// 保存本地挑战值（后续用于密钥派生）
+	h.ourChallenge = challenge
+
 	// 创建认证开始消息
 	msg := &AuthMessage{
 		MessageType: MsgTypeAuthStart,
@@ -118,6 +155,13 @@ func (h *HiChainHandle) startAuthentication() error {
 func (h *HiChainHandle) handleAuthStart(msg *AuthMessage) error {
 	h.peerAuthID = msg.AuthID // 记录发送方（对端）的认证ID
 
+	// 解码对端挑战值（从十六进制字符串）
+	peerChallenge, err := hex.DecodeString(msg.Challenge)
+	if err != nil {
+		return fmt.Errorf("解码对端挑战值失败: %w", err)
+	}
+	h.peerChallenge = peerChallenge // 保存对端挑战值（后续用于密钥派生）
+
 	// 获取协议参数（包含自身认证ID等）
 	params, err := h.callback.GetProtocolParams(h.identity, OpCodeAuthenticate)
 	if err != nil {
@@ -126,14 +170,16 @@ func (h *HiChainHandle) handleAuthStart(msg *AuthMessage) error {
 	h.selfAuthID = params.SelfAuthID // 记录自身认证ID
 
 	// 计算对"对端挑战值"的响应
-	challengeBytes := []byte(msg.Challenge) // 对端的挑战值（字符串转字节）
-	response := computeResponse(challengeBytes, h.selfAuthID)
+	response := computeResponse(peerChallenge, h.selfAuthID)
 
 	// 生成自身的挑战值（用于验证对端）
 	ourChallenge, err := generateChallenge()
 	if err != nil {
 		return err
 	}
+
+	// 保存本地挑战值（后续用于密钥派生）
+	h.ourChallenge = ourChallenge
 
 	// 构建挑战响应消息（携带自身挑战值和对端挑战的响应）
 	respMsg := &AuthMessage{
@@ -164,9 +210,15 @@ func (h *HiChainHandle) handleAuthChallenge(msg *AuthMessage) error {
 	// 验证对端的响应（简化实现，生产环境中应与本地存储的挑战值比对）
 	h.peerAuthID = msg.AuthID // 记录对端认证ID
 
+	// 解码对端挑战值（从十六进制字符串）
+	peerChallenge, err := hex.DecodeString(msg.Challenge)
+	if err != nil {
+		return fmt.Errorf("解码对端挑战值失败: %w", err)
+	}
+	h.peerChallenge = peerChallenge // 保存对端挑战值（后续用于密钥派生）
+
 	// 计算对"对端新挑战值"的响应
-	challengeBytes := []byte(msg.Challenge) // 对端的新挑战值
-	response := computeResponse(challengeBytes, h.selfAuthID)
+	response := computeResponse(peerChallenge, h.selfAuthID)
 
 	// 构建响应消息
 	respMsg := &AuthMessage{
@@ -186,9 +238,10 @@ func (h *HiChainHandle) handleAuthChallenge(msg *AuthMessage) error {
 		return err
 	}
 
-	// 派生会话密钥（基于挑战、响应和双方认证ID）
-	peerResponse := []byte(msg.Response) // 对端之前的响应值
-	sessionKey := deriveSessionKey(challengeBytes, peerResponse, h.selfAuthID, h.peerAuthID)
+	// 派生会话密钥（基于双方的挑战和响应）
+	// 重要：使用我们自己刚计算的response（对serverChallenge的响应）
+	// 而不是msg.Response（那是服务端对clientChallenge的响应）
+	sessionKey := deriveSessionKey(h.peerChallenge, response, h.selfAuthID, h.peerAuthID)
 	h.sessionKey = sessionKey
 
 	// 通知上层设置会话密钥
@@ -229,14 +282,19 @@ func (h *HiChainHandle) handleAuthChallenge(msg *AuthMessage) error {
 func (h *HiChainHandle) handleAuthResponse(msg *AuthMessage) error {
 	// 验证响应（简化实现，生产环境中应与本地存储的挑战值比对）
 
-	// 派生会话密钥
-	response := []byte(msg.Response) // 对端的响应值
-	challengeBytes := []byte{}       // 应使用本地存储的挑战值（此处简化）
-	sessionKey := deriveSessionKey(challengeBytes, response, h.selfAuthID, h.peerAuthID)
+	// 解码对端的响应值（从十六进制字符串）
+	peerResponse, err := hex.DecodeString(msg.Response)
+	if err != nil {
+		return fmt.Errorf("解码对端响应值失败: %w", err)
+	}
+
+	// 派生会话密钥（使用本地发出的挑战值）
+	// 服务端（接收方）使用自己发出的挑战值和客户端的响应值派生密钥
+	sessionKey := deriveSessionKey(h.ourChallenge, peerResponse, h.selfAuthID, h.peerAuthID)
 	h.sessionKey = sessionKey
 
 	// 通知上层设置会话密钥
-	err := h.callback.SetSessionKey(h.identity, &SessionKey{
+	err = h.callback.SetSessionKey(h.identity, &SessionKey{
 		Key:    sessionKey,
 		Length: SessionKeyLength,
 	})
