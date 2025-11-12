@@ -1,7 +1,6 @@
 package config
 
 import (
-	"flag"
 	"fmt"
 	log "github.com/junbin-yang/dsoftbus-go/pkg/utils/logger"
 	"gopkg.in/yaml.v2"
@@ -11,10 +10,7 @@ import (
 )
 
 var (
-	APPNAME    string = "dsoftbus"
-	VERSION    string = "undefined"
-	BUILD_TIME string = "undefined"
-	GO_VERSION string = "undefined"
+	APPNAME string = "dsoftbus"
 )
 
 type Config struct {
@@ -27,14 +23,6 @@ type Config struct {
 		Level  string
 		Rotate bool
 	}
-}
-
-func init() {
-	flag.Usage = func() {
-		fmt.Fprintln(os.Stdout, APPNAME+", version: "+VERSION+" (built at "+BUILD_TIME+") "+GO_VERSION)
-		flag.PrintDefaults()
-	}
-	flag.Parse()
 }
 
 func Parse() *Config {
