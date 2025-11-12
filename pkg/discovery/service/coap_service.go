@@ -134,8 +134,7 @@ func registerProviders() {
 		return localIp.String(), nil
 	}
 	discoverHandler := func(dev *coap.DeviceInfo) {
-		log.Infof("[DISCOVERY] 发现新设备：%s (%s) at %s",
-			dev.DeviceName, dev.DeviceId, dev.ServiceData)
+		log.Debugf("[DISCOVERY] 发现新设备：%s (%s) at %s", dev.DeviceName, dev.DeviceId, dev.ServiceData)
 
 		// 调用用户设置的回调
 		callback := getDiscoverCallback()
