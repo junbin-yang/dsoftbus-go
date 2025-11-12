@@ -19,6 +19,8 @@ const (
 	jsonRequestMode      = "mode"
 	jsonDeviceHash       = "deviceHash"
 	jsonServiceData      = "serviceData"
+
+	jsonExtendServiceData = "extendServiceData"
 )
 
 type NetworkInfo struct {
@@ -56,14 +58,16 @@ func PrepareServiceDiscover(isBroadcast bool) (string, error) {
 	}
 
 	data := map[string]any{
-		jsonDeviceID:     FormatDeviceID(dev.DeviceId), // 格式化为JSON格式以兼容真实鸿蒙
-		jsonDeviceName:   dev.DeviceName,
-		jsonDeviceType:   dev.DeviceType,
-		jsonHiComVersion: dev.Version,
-		jsonRequestMode:  dev.Mode,
-		jsonDeviceHash:   dev.DeviceHash,
-		jsonServiceData:  dev.ServiceData,
-		jsonDeviceWlanIP: ip,
+		jsonDeviceID:          FormatDeviceID(dev.DeviceId), // 格式化为JSON格式以兼容真实鸿蒙
+		jsonDeviceName:        dev.DeviceName,
+		jsonDeviceType:        dev.DeviceType,
+		jsonHiComVersion:      dev.Version,
+		jsonRequestMode:       dev.Mode,
+		jsonDeviceHash:        dev.DeviceHash,
+		jsonServiceData:       dev.ServiceData,
+		jsonDeviceWlanIP:      ip,
+		jsonCapabilityBitmap:  []uint16{192}, // 默认服务，如果没有值就发现不了设备
+		jsonExtendServiceData: "",            // 原代码在小型系统作为扩展服务字段使用
 	}
 
 	if isBroadcast {
