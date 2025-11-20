@@ -1,0 +1,8 @@
+devicetype: 'PC'
+devicename: 'SoftBusDevice01'
+udid: '888888F8A9DA785412C79BCDEFAACB92B0592FAA964806E2F2129B1BC476214D'
+interface: '以太网'
+logger:
+    dir: '/var/log/dsoftbus'
+    level: 'debug'
+    rotate: false

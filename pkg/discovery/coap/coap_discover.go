@@ -140,18 +140,11 @@ func handleReadEvent(server *SocketInfo) {
 		decodePkt.Header.MsgId, decodePkt.Header.TokenLen, decodePkt.OptionsNum, decodePkt.Payload.Len,
 	)
 
-	// 打印Payload内容（字符串与HEX）
-	if decodePkt.Payload.Len > 0 && len(decodePkt.Payload.Buffer) >= int(decodePkt.Payload.Len) {
-		pl := decodePkt.Payload.Buffer[:decodePkt.Payload.Len]
-		log.Debugf("[DISCOVERY] payload str: %s", string(pl))
-		/*
-			fmt.Printf("[DISCOVERY] payload hex: ")
-			for i := 0; i < int(decodePkt.Payload.Len); i++ {
-				fmt.Printf("%02X ", pl[i])
-			}
-			fmt.Println()
-		*/
-	}
+	// Payload内容仅在需要调试时打印
+	// if decodePkt.Payload.Len > 0 && len(decodePkt.Payload.Buffer) >= int(decodePkt.Payload.Len) {
+	// 	pl := decodePkt.Payload.Buffer[:decodePkt.Payload.Len]
+	// 	log.Debugf("[DISCOVERY] payload: %s", string(pl))
+	// }
 
 	postServiceDiscover(&decodePkt)
 }

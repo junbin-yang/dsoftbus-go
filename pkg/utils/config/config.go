@@ -1,12 +1,12 @@
 package config
 
 import (
-	"fmt"
-	log "github.com/junbin-yang/dsoftbus-go/pkg/utils/logger"
-	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"os"
 	"path/filepath"
+
+	log "github.com/junbin-yang/dsoftbus-go/pkg/utils/logger"
+	"gopkg.in/yaml.v2"
 )
 
 var (
@@ -16,7 +16,7 @@ var (
 type Config struct {
 	DeviceType string
 	DeviceName string
-	UUID       string
+	UDID       string
 	Interface  string
 	Logger     struct {
 		Dir    string

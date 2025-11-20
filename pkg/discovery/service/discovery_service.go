@@ -237,12 +237,12 @@ func InitService() error {
 
 	// 设备设备信息
 	conf := config.Parse()
-	if conf.DeviceName == "" || conf.UUID == "" || conf.Interface == "" || conf.DeviceType == "" {
+	if conf.DeviceName == "" || conf.UDID == "" || conf.Interface == "" || conf.DeviceType == "" {
 		return errors.New("配置文件错误")
 	}
 	DiscCoapRegisterDeviceInfo(LocalDeviceInfo{
 		Name:             conf.DeviceName,
-		DeviceId:         conf.UUID,
+		DeviceId:         conf.UDID,
 		NetworkName:      conf.Interface,
 		DeviceType:       GetDeviceTypeByName(conf.DeviceType),
 		Version:          DEVICE_DEFAULT_VERSION,

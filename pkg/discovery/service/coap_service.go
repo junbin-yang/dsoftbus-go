@@ -134,7 +134,21 @@ func registerProviders() {
 		return localIp.String(), nil
 	}
 	discoverHandler := func(dev *coap.DeviceInfo) {
-		log.Debugf("[DISCOVERY] 发现新设备：%s (%s) at %s", dev.DeviceName, dev.DeviceId, dev.ServiceData)
+		// 提取端口信息
+		port := ""
+		if strings.Contains(dev.ServiceData, "port:") {
+			parts := strings.Split(dev.ServiceData, "port:")
+			if len(parts) > 1 {
+				port = strings.TrimRight(strings.Split(parts[1], ",")[0], " ")
+			}
+		}
+
+		// 精简输出
+		if port != "" {
+			log.Infof("[DISCOVERY] 发现设备: %s (%s:%s)", dev.DeviceName, dev.NetChannelInfo.Network.IP, port)
+		} else {
+			log.Infof("[DISCOVERY] 发现设备: %s (%s)", dev.DeviceName, dev.NetChannelInfo.Network.IP)
+		}
 
 		// 调用用户设置的回调
 		callback := getDiscoverCallback()

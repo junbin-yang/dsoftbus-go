@@ -1,7 +1,6 @@
 package tcp_connection
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -10,51 +9,50 @@ import (
 	log "github.com/junbin-yang/dsoftbus-go/pkg/utils/logger"
 )
 
-// 负责监听连接、处理数据收发及连接管理
+// BaseServer 负责监听连接、处理数据收发及连接管理
 type BaseServer struct {
-	listener  net.Listener         // 连接监听器
-	connMap   map[int]net.Conn     // 连接映射（伪文件描述符 -> 网络连接）
-	connMapMu sync.RWMutex         // 保护connMap的读写锁
-	nextFd    int                  // 下一个可用的伪文件描述符
-	fdMu      sync.Mutex           // 保护nextFd的互斥锁
-	stopChan  chan struct{}        // 用于通知停止的通道
-	wg        sync.WaitGroup       // 用于等待所有goroutine结束
-	handler   *BaseListenerHandler // 监听器的事件回调
+	listener net.Listener          // 连接监听器
+	connMgr  *ConnectionManager    // 连接管理器
+	stopChan chan struct{}         // 用于通知停止的通道
+	wg       sync.WaitGroup        // 用于等待所有goroutine结束
+	callback *BaseListenerCallback // 统一的事件回调
 }
 
-func NewBaseServer() *BaseServer {
+// NewBaseServer 创建新的服务端实例
+func NewBaseServer(connMgr *ConnectionManager) *BaseServer {
+	if connMgr == nil {
+		connMgr = NewConnectionManager()
+	}
 	return &BaseServer{
-		connMap:  make(map[int]net.Conn),
-		nextFd:   1000, // 伪文件描述符起始值（避免与系统fd冲突）
+		connMgr:  connMgr,
 		stopChan: make(chan struct{}),
 	}
 }
 
 // StartBaseListener 启动基础监听器
 // 参数：
-//   info：本地监听器的配置信息（包含地址、端口等）
-//   listener：监听器实例，用于处理监听器的事件回调
-func (s *BaseServer) StartBaseListener(opt *SocketOption, handler *BaseListenerHandler) error {
-	if opt == nil || handler == nil {
+//   - opt：本地监听器的配置信息（包含地址、端口等）
+//   - callback：统一的事件回调处理器
+func (s *BaseServer) StartBaseListener(opt *SocketOption, callback *BaseListenerCallback) error {
+	if opt == nil || callback == nil {
 		return fmt.Errorf("参数错误")
 	}
 
 	// 创建监听器
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", opt.addr, opt.port))
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", opt.Addr, opt.Port))
 	if err != nil {
-		fmt.Printf("创建监听器失败：%v\n", err)
-		return err
+		return fmt.Errorf("创建监听器失败：%v", err)
 	}
 
 	s.listener = listener
-	s.handler = handler
+	s.callback = callback
 	s.wg.Add(1)
 	go s.acceptLoop()
 
 	return nil
 }
 
-// StopBaseListener 启动基础监听器
+// StopBaseListener 停止基础监听器
 func (s *BaseServer) StopBaseListener() error {
 	close(s.stopChan)
 
@@ -63,63 +61,16 @@ func (s *BaseServer) StopBaseListener() error {
 		s.listener.Close()
 	}
 
-	// 关闭所有连接
-	s.connMapMu.Lock()
-	for fd, conn := range s.connMap {
-		conn.Close()
-		delete(s.connMap, fd)
+	// 关闭所有服务端连接
+	fds := s.connMgr.GetAllFds()
+	for _, fd := range fds {
+		if connType, ok := s.connMgr.GetConnType(fd); ok && connType == ConnectionTypeServer {
+			s.connMgr.UnregisterConn(fd)
+		}
 	}
-	s.connMapMu.Unlock()
 
 	s.wg.Wait()
 	return nil
-}
-
-// allocateFd 为连接分配伪文件描述符（只用于跟踪连接）
-// 返回：
-//   - 分配的伪文件描述符
-func (s *BaseServer) allocateFd() int {
-	s.fdMu.Lock()
-	defer s.fdMu.Unlock()
-	fd := s.nextFd
-	s.nextFd++
-	return fd
-}
-
-// registerConn 注册连接并分配伪文件描述符
-// 参数：
-//   - conn：网络连接
-// 返回：
-//   - 分配的伪文件描述符
-func (s *BaseServer) registerConn(conn net.Conn) int {
-	fd := s.allocateFd()
-	s.connMapMu.Lock()
-	s.connMap[fd] = conn
-	s.connMapMu.Unlock()
-	return fd
-}
-
-// unregisterConn 注销连接（关闭并从映射中移除）
-// 参数：
-//   - fd：伪文件描述符
-func (s *BaseServer) unregisterConn(fd int) {
-	s.connMapMu.Lock()
-	if conn, ok := s.connMap[fd]; ok {
-		conn.Close()
-		delete(s.connMap, fd)
-	}
-	s.connMapMu.Unlock()
-}
-
-// getConn 通过伪文件描述符获取连接
-// 参数：
-//   - fd：伪文件描述符
-// 返回：
-//   - 对应的网络连接（net.Conn）
-func (s *BaseServer) getConn(fd int) net.Conn {
-	s.connMapMu.RLock()
-	defer s.connMapMu.RUnlock()
-	return s.connMap[fd]
 }
 
 // acceptLoop 循环接受 incoming 连接
@@ -140,7 +91,7 @@ func (s *BaseServer) acceptLoop() {
 			case <-s.stopChan: // 停止信号导致的错误，直接返回
 				return
 			default:
-				log.Errorf("[BASE_LISTENER] 接受连接错误: %v", err)
+				log.Errorf("[BASE_SERVER] 接受连接错误: %v", err)
 				continue
 			}
 		}
@@ -160,20 +111,29 @@ func (s *BaseServer) handleConnection(netConn net.Conn) {
 
 	// 获取远程地址信息
 	remoteAddr := netConn.RemoteAddr().(*net.TCPAddr)
-	ip := remoteAddr.IP.String()
+	localAddr := netConn.LocalAddr().(*net.TCPAddr)
 
-	// 注册连接并获取伪文件描述符
-	fd := s.registerConn(netConn)
-	defer s.unregisterConn(fd) // 退出时注销连接
+	// 注册连接并获取虚拟文件描述符
+	fd := s.connMgr.RegisterConn(netConn, ConnectionTypeServer)
+	defer s.connMgr.UnregisterConn(fd) // 退出时注销连接
 
-	log.Debugf("[BASE_LISTENER] 新连接来自 %s (fd=%d)", ip, fd)
+	log.Debugf("[BASE_SERVER] 新连接来自 %s:%d (fd=%d)", remoteAddr.IP.String(), remoteAddr.Port, fd)
 
-	// 处理该连接的连接事件
-	connectInfo := &ConnectOption{
-		socketOption: &SocketOption{addr: ip, port: remoteAddr.Port},
-		netConn:      &netConn,
+	// 触发连接事件回调
+	if s.callback != nil && s.callback.OnConnected != nil {
+		connectInfo := &ConnectOption{
+			LocalSocket: &SocketOption{
+				Addr: localAddr.IP.String(),
+				Port: localAddr.Port,
+			},
+			RemoteSocket: &SocketOption{
+				Addr: remoteAddr.IP.String(),
+				Port: remoteAddr.Port,
+			},
+			NetConn: &netConn,
+		}
+		s.callback.OnConnected(fd, ConnectionTypeServer, connectInfo)
 	}
-	s.handler.onConnectEvent(fd, connectInfo)
 
 	// 处理该连接的数据事件
 	s.handleDataEvents(fd, netConn)
@@ -181,7 +141,7 @@ func (s *BaseServer) handleConnection(netConn net.Conn) {
 
 // handleDataEvents 处理连接的数据接收和处理
 // 参数：
-//   - fd：伪文件描述符
+//   - fd：虚拟文件描述符
 //   - netConn：网络连接
 func (s *BaseServer) handleDataEvents(fd int, netConn net.Conn) {
 	buf := make([]byte, DefaultBufSize)
@@ -190,7 +150,9 @@ func (s *BaseServer) handleDataEvents(fd int, netConn net.Conn) {
 	for {
 		select {
 		case <-s.stopChan: // 收到停止信号
-			s.handler.onDisconnectEvent(fd)
+			if s.callback != nil && s.callback.OnDisconnected != nil {
+				s.callback.OnDisconnected(fd, ConnectionTypeServer)
+			}
 			return
 		default:
 		}
@@ -201,42 +163,52 @@ func (s *BaseServer) handleDataEvents(fd int, netConn net.Conn) {
 			// 处理读取错误
 			if err == io.EOF {
 				// 连接正常关闭（对方主动断开）
-				log.Debugf("[BASE_LISTENER] 连接正常关闭 (fd=%d)", fd)
+				log.Debugf("[BASE_SERVER] 连接正常关闭 (fd=%d)", fd)
 			} else {
 				// 其他异常错误（如网络中断）
-				log.Errorf("[BASE_LISTENER] 读取数据错误 (fd=%d): %v", fd, err)
+				log.Errorf("[BASE_SERVER] 读取数据错误 (fd=%d): %v", fd, err)
 			}
 			// 无论何种错误，均触发断开事件并退出
-			s.handler.onDisconnectEvent(fd)
+			if s.callback != nil && s.callback.OnDisconnected != nil {
+				s.callback.OnDisconnected(fd, ConnectionTypeServer)
+			}
 			return
 		}
 
 		if n == 0 { // 读取到0字节表示连接关闭
-			s.handler.onDisconnectEvent(fd)
+			if s.callback != nil && s.callback.OnDisconnected != nil {
+				s.callback.OnDisconnected(fd, ConnectionTypeServer)
+			}
 			return
 		}
 
 		used += n // 更新已使用字节数
 
 		// 处理缓冲区中的数据包
-		processed := s.handler.processPackets(fd, &netConn, buf, used)
-		if processed > 0 {
-			// 将未处理的数据移到缓冲区头部
-			used -= processed
-			if used > 0 {
-				copy(buf, buf[processed:processed+used])
+		if s.callback != nil && s.callback.OnDataReceived != nil {
+			processed := s.callback.OnDataReceived(fd, ConnectionTypeServer, buf, used)
+			if processed > 0 {
+				// 将未处理的数据移到缓冲区头部
+				used -= processed
+				if used > 0 {
+					copy(buf, buf[processed:processed+used])
+				}
+			} else if processed < 0 {
+				// 处理失败，关闭连接
+				if s.callback.OnDisconnected != nil {
+					s.callback.OnDisconnected(fd, ConnectionTypeServer)
+				}
+				log.Errorf("[BASE_SERVER] 数据包处理失败，关闭连接 (fd=%d)", fd)
+				return
 			}
-		} else if processed < 0 {
-			// 处理失败，关闭连接
-			s.handler.onDisconnectEvent(fd)
-			log.Errorf("[BASE_LISTENER] 数据包处理失败，关闭连接 (fd=%d)", fd)
-			return
 		}
 
 		// 检查缓冲区是否溢出
 		if used >= len(buf) {
-			s.handler.onDisconnectEvent(fd)
-			log.Errorf("[BASE_LISTENER] 缓冲区溢出，关闭连接 (fd=%d)", fd)
+			if s.callback != nil && s.callback.OnDisconnected != nil {
+				s.callback.OnDisconnected(fd, ConnectionTypeServer)
+			}
+			log.Errorf("[BASE_SERVER] 缓冲区溢出，关闭连接 (fd=%d)", fd)
 			return
 		}
 	}
@@ -253,10 +225,52 @@ func (s *BaseServer) GetPort() int {
 	return addr.Port
 }
 
-func (s *BaseServer) SendBytes(fd int, data []byte) error {
-	if conn, ok := s.getConn(fd).(*net.TCPConn); ok {
-		_, err := conn.Write(data)
-		return err
+// GetAddr 返回服务器监听的地址
+// 返回：
+//   - IP地址（未启动时返回空字符串）
+func (s *BaseServer) GetAddr() string {
+	if s.listener == nil {
+		return ""
 	}
-	return errors.New("无效的连接")
+	addr := s.listener.Addr().(*net.TCPAddr)
+	return addr.IP.String()
+}
+
+// SendBytes 发送数据到指定连接
+// 参数：
+//   - fd：虚拟文件描述符
+//   - data：要发送的数据
+// 返回：
+//   - 错误信息（发送失败时）
+func (s *BaseServer) SendBytes(fd int, data []byte) error {
+	return s.connMgr.SendBytes(fd, data)
+}
+
+// GetConnInfo 获取连接的完整信息（包含本地和远程两端）
+// 参数：
+//   - fd：虚拟文件描述符
+// 返回：
+//   - 连接完整信息
+func (s *BaseServer) GetConnInfo(fd int) *ConnectOption {
+	return s.connMgr.GetConnInfo(fd)
+}
+
+// GetConnPeerInfo 获取连接的对端信息（已废弃，建议使用 GetConnInfo）
+// 参数：
+//   - fd：虚拟文件描述符
+// 返回：
+//   - 对端连接信息
+// Deprecated: 使用 GetConnInfo 获取完整的连接信息
+func (s *BaseServer) GetConnPeerInfo(fd int) *ConnectOption {
+	return s.connMgr.GetConnInfo(fd)
+}
+
+// GetConnLocalInfo 获取连接的本地信息（已废弃，建议使用 GetConnInfo）
+// 参数：
+//   - fd：虚拟文件描述符
+// 返回：
+//   - 本地连接信息
+// Deprecated: 使用 GetConnInfo 获取完整的连接信息
+func (s *BaseServer) GetConnLocalInfo(fd int) *ConnectOption {
+	return s.connMgr.GetConnInfo(fd)
 }
